@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>手旗信号セマフォービジュアルエンコーダー</title>
+<script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900 text-white min-h-screen flex flex-col items-center p-4">
+<h1 class="text-2xl font-bold text-red-300 mt-4 mb-1">手旗信号セマフォービジュアルエンコーダー</h1>
+<p class="text-gray-400 text-sm mb-4">テキストをISO手旗信号に変換してアニメーション表示。クイズモードで腕の角度を当てよう！</p>
+
+<div class="flex flex-wrap gap-6 justify-center w-full max-w-3xl">
+  <!-- SVG person display -->
+  <div class="flex flex-col items-center">
+    <svg id="personSvg" width="200" height="220" viewBox="0 0 200 220" xmlns="http://www.w3.org/2000/svg" aria-label="手旗信号人形">
+      <!-- Background -->
+      <rect width="200" height="220" fill="#1a1a2e" rx="8"/>
+      <!-- Body -->
+      <line x1="100" y1="90" x2="100" y2="160" stroke="#e0e0e0" stroke-width="6" stroke-linecap="round"/>
+      <!-- Legs -->
+      <line x1="100" y1="160" x2="80" y2="200" stroke="#e0e0e0" stroke-width="6" stroke-linecap="round"/>
+      <line x1="100" y1="160" x2="120" y2="200" stroke="#e0e0e0" stroke-width="6" stroke-linecap="round"/>
+      <!-- Head -->
+      <circle cx="100" cy="68" r="20" fill="#f5c5a3" stroke="#e0e0e0" stroke-width="2"/>
+      <!-- Eyes -->
+      <circle cx="93" cy="65" r="3" fill="#333"/>
+      <circle cx="107" cy="65" r="3" fill="#333"/>
+      <!-- Arms will be drawn by JS -->
+      <line id="leftArm" x1="100" y1="115" x2="60" y2="135" stroke="#e53935" stroke-width="7" stroke-linecap="round"/>
+      <line id="rightArm" x1="100" y1="115" x2="140" y2="135" stroke="#e53935" stroke-width="7" stroke-linecap="round"/>
+      <!-- Flags -->
+      <polygon id="leftFlag" points="60,135 44,120 72,118" fill="#e53935" opacity="0.9"/>
+      <polygon id="rightFlag" points="140,135 156,120 128,118" fill="#e53935" opacity="0.9"/>
+    </svg>
+
+    <div id="currentChar" class="mt-2 text-4xl font-bold text-yellow-300 w-14 h-14 flex items-center justify-center rounded-full bg-gray-800">?</div>
+    <div id="charLabel" class="text-sm text-gray-400 mt-1">待機中</div>
+  </div>
+
+  <!-- Controls -->
+  <div class="flex flex-col gap-3 flex-1 min-w-[220px]">
+    <div id="encodePanel">
+      <label class="block text-sm text-gray-300 mb-1">エンコードするテキスト（A-Z/スペース）</label>
+      <input type="text" id="textInput" aria-label="エンコードするテキスト" placeholder="例: SOS" maxlength="30" class="bg-gray-700 text-white rounded px-3 py-2 w-full text-lg tracking-widest uppercase" oninput="this.value=this.value.toUpperCase()">
+      <div class="flex gap-2 mt-2">
+        <button id="playBtn" aria-label="アニメーション再生" class="bg-green-700 hover:bg-green-600 text-white font-bold px-4 py-2 rounded flex-1">再生</button>
+        <button id="stopBtn" aria-label="停止" class="bg-gray-600 hover:bg-gray-500 text-white font-bold px-4 py-2 rounded">停止</button>
+      </div>
+      <div class="flex items-center gap-2 mt-2">
+        <label class="text-sm text-gray-300" for="speedSlider">速度:</label>
+        <input type="range" id="speedSlider" min="300" max="2000" value="900" aria-label="アニメーション速度" class="flex-1">
+        <span id="speedVal" class="text-yellow-300 text-sm w-14 text-right">標準</span>
+      </div>
+    </div>
+
+    <div id="quizPanel" class="hidden">
+      <div class="bg-gray-800 rounded p-3">
+        <div class="text-sm text-gray-300 mb-2">この姿勢はどの文字？</div>
+        <div class="flex gap-2 flex-wrap mb-2" id="quizChoices"></div>
+        <div id="quizResult" class="text-sm font-bold mt-2"></div>
+      </div>
+    </div>
+
+    <div class="flex gap-2">
+      <button id="toggleModeBtn" aria-label="モード切り替え" class="bg-purple-700 hover:bg-purple-600 text-white font-bold px-4 py-2 rounded flex-1 text-sm">クイズモードへ</button>
+    </div>
+
+    <div class="bg-gray-800 rounded p-2 text-xs">
+      <div class="text-gray-400 mb-1 font-bold">セマフォー角度表（左手/右手）</div>
+      <div id="referenceTable" class="grid grid-cols-4 gap-1 text-xs"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+function escHtml(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+
+// Semaphore angles: [leftArmDeg, rightArmDeg] from DOWN (0=down, 90=right, 180=up, 270=left, etc.)
+// Standard semaphore: arms at 45° increments. 0=down, 45=lower-diag, 90=side, 135=upper-diag, 180=up
+// Left arm angles measured from person's left (screen right), right from person's right (screen left)
+// Format: [left_angle_from_body, right_angle_from_body] in degrees, 0=down, clockwise
+const SEMAPHORE = {
+  'A': [225, 270], // L=lower-left, R=down
+  'B': [225, 315], // L=lower-left, R=lower-right
+  'C': [225, 0],   // L=lower-left, R=right
+  'D': [225, 45],  // L=lower-left, R=upper-right
+  'E': [225, 90],  // L=lower-left, R=up
+  'F': [225, 135], // L=lower-left, R=upper-left
+  'G': [270, 315], // L=down, R=lower-right
+  'H': [270, 0],
+  'I': [270, 45],
+  'J': [315, 90],
+  'K': [315, 270],
+  'L': [315, 315],
+  'M': [315, 0],
+  'N': [315, 45],
+  'O': [0, 270],
+  'P': [0, 315],
+  'Q': [0, 0],
+  'R': [0, 45],
+  'S': [45, 270],
+  'T': [45, 315],
+  'U': [45, 0],
+  'V': [90, 315],
+  'W': [270, 90],
+  'X': [0, 90],
+  'Y': [45, 90],
+  'Z': [90, 270],
+  ' ': [270, 270],  // rest position
+};
+
+// Convert angle (0=down) to SVG endpoint
+function armEndpoint(cx, cy, angle, len) {
+  // 0=down, 90=screen-left, 180=up, 270=screen-right
+  const rad = (angle - 90) * Math.PI / 180;
+  return {
+    x: cx + Math.cos(rad) * len,
+    y: cy + Math.sin(rad) * len
+  };
+}
+
+function setArms(leftAngle, rightAngle) {
+  const cx = 100, shoulderY = 115, len = 48;
+  // Left arm: person's left = screen right (+x direction base)
+  const lEnd = armEndpoint(cx, shoulderY, leftAngle, len);
+  // Right arm: person's right = screen left
+  const rEnd = armEndpoint(cx, shoulderY, 360 - rightAngle, len);
+
+  const la = document.getElementById('leftArm');
+  const ra = document.getElementById('rightArm');
+  const lf = document.getElementById('leftFlag');
+  const rf = document.getElementById('rightFlag');
+
+  la.setAttribute('x2', lEnd.x);
+  la.setAttribute('y2', lEnd.y);
+  ra.setAttribute('x2', rEnd.x);
+  ra.setAttribute('y2', rEnd.y);
+
+  // Flags
+  const flagOffset = (ex, ey, bx, by) => {
+    const dx = ex - bx, dy = ey - by;
+    const len2 = Math.sqrt(dx*dx + dy*dy);
+    const nx = -dy / len2 * 14, ny = dx / len2 * 14;
+    return `${ex},${ey} ${ex + dx/len2*18 + nx},${ey + dy/len2*18 + ny} ${ex + dx/len2*18 - nx},${ey + dy/len2*18 - ny}`;
+  };
+  lf.setAttribute('points', flagOffset(lEnd.x, lEnd.y, cx, shoulderY));
+  rf.setAttribute('points', flagOffset(rEnd.x, rEnd.y, cx, shoulderY));
+}
+
+let animTimer = null;
+let mode = 'encode';
+let quizChar = null;
+let quizScore = 0;
+
+function stopAnim() {
+  if (animTimer) { clearTimeout(animTimer); animTimer = null; }
+  document.getElementById('charLabel').textContent = '停止';
+}
+
+function playAnim() {
+  stopAnim();
+  const text = document.getElementById('textInput').value.toUpperCase().replace(/[^A-Z ]/g, '');
+  if (!text) return;
+  const speed = parseInt(document.getElementById('speedSlider').value);
+  let i = 0;
+  function next() {
+    if (i >= text.length) {
+      document.getElementById('charLabel').textContent = '完了';
+      setArms(270, 270);
+      document.getElementById('currentChar').textContent = '✓';
+      return;
+    }
+    const ch = text[i];
+    const angles = SEMAPHORE[ch] || SEMAPHORE[' '];
+    setArms(angles[0], angles[1]);
+    document.getElementById('currentChar').textContent = ch === ' ' ? '␣' : ch;
+    document.getElementById('charLabel').textContent = `${i + 1} / ${text.length}`;
+    i++;
+    animTimer = setTimeout(next, speed);
+  }
+  next();
+}
+
+function startQuiz() {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  quizChar = chars[Math.floor(Math.random() * chars.length)];
+  const angles = SEMAPHORE[quizChar];
+  setArms(angles[0], angles[1]);
+  document.getElementById('currentChar').textContent = '?';
+  document.getElementById('charLabel').textContent = 'どの文字？';
+  document.getElementById('quizResult').textContent = '';
+
+  // Generate choices (correct + 5 random)
+  const choices = new Set([quizChar]);
+  while (choices.size < 6) choices.add(chars[Math.floor(Math.random() * chars.length)]);
+  const shuffled = [...choices].sort(() => Math.random() - 0.5);
+
+  const container = document.getElementById('quizChoices');
+  container.innerHTML = '';
+  for (const c of shuffled) {
+    const btn = document.createElement('button');
+    btn.textContent = c;
+    btn.setAttribute('aria-label', `答え: ${c}`);
+    btn.className = 'w-10 h-10 font-bold rounded bg-gray-600 hover:bg-blue-600 text-white text-lg';
+    btn.addEventListener('click', function() {
+      if (c === quizChar) {
+        document.getElementById('quizResult').textContent = `正解！ ${c} です！ (+1)`;
+        document.getElementById('quizResult').className = 'text-sm font-bold mt-2 text-green-400';
+        document.getElementById('currentChar').textContent = c;
+        quizScore++;
+      } else {
+        document.getElementById('quizResult').textContent = `不正解。正解は ${quizChar} でした`;
+        document.getElementById('quizResult').className = 'text-sm font-bold mt-2 text-red-400';
+        document.getElementById('currentChar').textContent = quizChar;
+      }
+      document.getElementById('charLabel').textContent = `スコア: ${quizScore}`;
+      setTimeout(() => { if (mode === 'quiz') startQuiz(); }, 1800);
+    });
+    container.appendChild(btn);
+  }
+}
+
+document.getElementById('playBtn').addEventListener('click', playAnim);
+document.getElementById('stopBtn').addEventListener('click', stopAnim);
+
+document.getElementById('speedSlider').addEventListener('input', function() {
+  const v = parseInt(this.value);
+  const labels = {300:'速い', 600:'やや速い', 900:'標準', 1200:'ゆっくり', 2000:'超ゆっくり'};
+  let closest = Object.keys(labels).reduce((a, b) => Math.abs(b - v) < Math.abs(a - v) ? b : a);
+  document.getElementById('speedVal').textContent = labels[closest] || `${v}ms`;
+});
+
+document.getElementById('toggleModeBtn').addEventListener('click', function() {
+  if (mode === 'encode') {
+    mode = 'quiz';
+    this.textContent = 'エンコードモードへ';
+    document.getElementById('encodePanel').classList.add('hidden');
+    document.getElementById('quizPanel').classList.remove('hidden');
+    stopAnim();
+    startQuiz();
+  } else {
+    mode = 'encode';
+    this.textContent = 'クイズモードへ';
+    document.getElementById('encodePanel').classList.remove('hidden');
+    document.getElementById('quizPanel').classList.add('hidden');
+    setArms(270, 270);
+    document.getElementById('currentChar').textContent = '?';
+    document.getElementById('charLabel').textContent = '待機中';
+  }
+});
+
+// Build reference table
+const refTable = document.getElementById('referenceTable');
+for (const [ch, [la, ra]] of Object.entries(SEMAPHORE)) {
+  if (ch === ' ') continue;
+  const cell = document.createElement('div');
+  cell.className = 'text-center';
+  cell.innerHTML = `<span class="text-yellow-300 font-bold">${escHtml(ch)}</span><span class="text-gray-400 ml-1 text-xs">${la}/${ra}</span>`;
+  refTable.appendChild(cell);
+}
+
+// Initial rest position
+setArms(270, 270);
+</script>
+</body>
+</html>
